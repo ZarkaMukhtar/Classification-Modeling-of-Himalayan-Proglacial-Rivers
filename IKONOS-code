@@ -1,0 +1,75 @@
+var KholaIK2003 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/Langtang2003IKMosaic");
+var roi = ee.FeatureCollection("projects/gee-zmukhtar/assets/2003KholaReach1");
+var roi2 = ee.FeatureCollection("projects/gee-zmukhtar/assets/2003KholaReach2");
+var roi3 = ee.FeatureCollection("projects/gee-zmukhtar/assets/2003KholaReach3");
+
+//clipping images 
+var KholaIK_2003 = KholaIK2003.clip(roi3)
+Map.addLayer(KholaIK_2003, {color:'blue'},'KholaIK_2003', false);
+
+var B3= KholaIK_2003.select('b3')//.rename("green")
+var B4 = KholaIK_2003.select('b4')//.rename("nir")
+var predictors = B4
+.addBands(B3)
+print('predictors: ', predictors);
+var Khola_IK2003ndwi = B3.subtract(B4).divide(B3.add(B4)).rename('ndwi'); 
+
+var trainingData = KholaVeg2003IK.merge(Kholawater2003IK).merge(KholaSed2003IK);
+//print(trainingDataKhola2003, 'trainingDataKhola2003')
+
+//splitting data
+var random_columnKhola2003 = trainingData.randomColumn(); // is used to split data
+var Calibration_sample = random_columnKhola2003.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample = random_columnKhola2003.filter(ee.Filter.lte('random',0.3)); // 30%
+print ('cali', Calibration_sample)
+print ('vali', validation_sample)
+// Sampling Nubra2003 training data_polygon to pixels
+var CsampledKhola2003 = Khola_IK2003ndwi.sampleRegions({
+  collection: Calibration_sample,
+ // properties: ['ndwi'],
+//  scale: 2.5
+});
+print (CsampledKhola2003, 'CsampledKhola2003')
+
+
+//Training Classifier Random Forest
+var trainingclassifier = ee.Classifier.smileRandomForest({
+                  numberOfTrees: 100,
+                  seed: 7})
+.train({
+  features: CsampledKhola2003,
+  classProperty: 'LC',
+  inputProperties: ['ndwi'],
+}).setOutputMode('classification');
+
+print(trainingclassifier, 'trainingclassifier');
+
+
+
+//validation sampling
+var Vsampled = Khola_IK2003ndwi.sampleRegions({
+  collection: validation_sample,
+  properties: ['LC'],
+  scale: 2.5
+});
+print(Vsampled, 'Vsampled')
+var Validation = Vsampled.classify(trainingclassifier);
+print (Validation, 'Validation')
+
+//error matrix claculation
+var error_matrix = Validation.errorMatrix({
+  actual:'LC',
+  predicted:'classification',
+});
+print (error_matrix, 'EMmodel')
+var total_accuracy = error_matrix.accuracy();
+print(total_accuracy, 'total_accuracyModel')
+
+var user_accuracy = error_matrix.consumersAccuracy();
+print(user_accuracy, 'user_accuracy')
+ 
+var pro_accuracy = error_matrix.producersAccuracy();
+print(pro_accuracy, "pro_accuracy")
+ 
+var kappa = error_matrix.kappa();
+print(kappa, 'kappa');
