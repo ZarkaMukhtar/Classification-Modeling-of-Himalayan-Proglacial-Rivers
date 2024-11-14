@@ -1,0 +1,149 @@
+//uploading satellite images
+var NubraWV2_01NOV2014 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/SiachenWV201NOV2014");
+var GangaVW2_2014Sep08 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/14SEP08WV2Ganga");
+var KholaWV2_2011Sep27 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/2011SEP27LangtangWV2");
+var KholaWV2_2015Sep07 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/15SEP07LangtangWV2");
+
+//study area shapefiles
+var roi = ee.FeatureCollection('projects/gee-zmukhtar/assets/SiachenFCFinal');
+var roi2 = ee.FeatureCollection('projects/gee-zmukhtar/assets/GangaFluvialCorridor1');
+var roi3 = ee.FeatureCollection('projects/gee-zmukhtar/assets/KholaVBEPolygon');
+Map.centerObject(roi);
+
+//for Nubra 2014 image
+// selecting and merging into single training dataset (polygons) file
+var Nubra2014 = N_WV2Water2014.merge(N_WV2Veg2014).merge(N_WV2Sed2014);
+// splitting dataset in claibration and validation datasets
+var random_columnNubra = Nubra2014.randomColumn(); // is used to split data
+var Calibration_sample = random_columnNubra.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample = random_columnNubra.filter(ee.Filter.lte('random',0.3));
+print('Calibration_Nubra',Calibration_sample)
+print('validation_Nubra',validation_sample)
+
+//for Ganga 2014 image
+// selecting and merging into single training dataset (polygons) file
+var Ganga2014 = G_WV2Water2014.merge(G_WV2Veg2014).merge(G_WV2Sed2014);
+// splitting dataset in claibration and validation datasets
+var random_columnGanga = Ganga2014.randomColumn(); // is used to split data
+var Calibration_sample1 = random_columnGanga.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample1 = random_columnGanga.filter(ee.Filter.lte('random',0.3));
+print('Calibration_Ganga',Calibration_sample1)
+print('validation_Ganga',validation_sample1)
+
+// for Khola 2011 and 2015 images
+// selecting and merging into single training dataset (polygons) file
+var Khula2011_15 = K_WV2Water2011.merge(K_WV2Veg2011).merge(K_WV2Sed2011).merge(K_WV2Water2015).merge(K_WV2Veg2015).merge(K_WV2Sed2015);
+// splitting dataset in claibration and validation datasets
+var random_columnKhula = Khula2011_15.randomColumn(); // is used to split data
+var CalibrationKhula = random_columnKhula.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample2 = random_columnKhula.filter(ee.Filter.lte('random',0.3));
+print('CalibrationKhula',CalibrationKhula)
+print('validationKhula',validation_sample2)
+
+// for Nubra 2014
+// Calibration Sampling training data_polygon to pixels
+var CsampledNubra = NubraWV2_01NOV2014.sampleRegions({
+  collection: Calibration_sample,
+  properties: ['LC'],
+  scale: 2.5
+});
+print (CsampledNubra, 'CsampledNubra')
+
+// for Ganga 2014
+// Calibration Sampling training data_polygon to pixels
+var CsampledGanga = GangaVW2_2014Sep08.sampleRegions({
+  collection: Calibration_sample1,
+  properties: ['LC'],
+  scale: 2.5
+});
+print (CsampledGanga, 'CsampledGanga')
+
+// for Khola
+// Calibration Sampling training data_polygon to pixels
+var CsampledKhula = KholaWV2_2011Sep27.sampleRegions({
+  collection: CalibrationKhula,
+  properties: ['LC'],
+  scale: 2.5
+});
+print (CsampledKhula, 'CsampledKhula')
+
+// merging
+var calibration= CsampledNubra.merge(CsampledGanga).merge(CsampledKhula);
+var validation= validation_sample.merge(validation_sample1).merge(validation_sample2);
+
+//Training Classifier Random Forest
+var trainingclassifier = ee.Classifier.smileRandomForest({
+                  numberOfTrees: 100,
+                  seed: 7})
+.train({
+features: calibration,
+classProperty: 'LC',
+inputProperties: ['b4', 'b3'],
+}).setOutputMode('classification');
+print(trainingclassifier, 'trainingclassifier');
+
+// checking training accuracy
+var trainAccuracy = trainingclassifier.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+// clipping original image using aoi shapefile
+// do this for every location and every image in the list
+var Khula2015clipped = KholaWV2_2015Sep07.clip(roi3)
+Map.addLayer(Khula2015clipped,{color:'blue'},'Khula2015clipped', false);
+
+// classifying images
+// do this for every location and every image in the list
+var Khula2015_clsfd = Khula2015clipped.classify(trainingclassifier);
+Map.addLayer(Khula2015_clsfd, {min:0, max:2, palette:['green', 'blue', 'gray']}, 'Khula2015_clsfd')
+Map.centerObject(Khula2015_clsfd);
+
+// calculating area (sq km) of geomorphic units from classified images
+// do this for every location and every image in the list
+var all_classes_area = ee.Image.pixelArea().addBands(Khula2015_clsfd).divide(1e6)
+                      .reduceRegion({
+                        reducer: ee.Reducer.sum().group(1), 
+                        geometry: roi3,
+                        scale: 2.5,
+                        bestEffort: true
+                      })
+print(all_classes_area, 'All Classes Area in Square KM')
+
+//Downloading image or uploading it to drive
+// do this for every location and every image in the list
+Export.image.toDrive({
+  image: Khula2015_clsfd,
+  description:'Khula2015_clsfd',
+  folder: 'WV2',
+  scale:2.5,
+  region:roi3,
+})
+
+//validation sampling
+var Vsampled = Khula2015clipped.sampleRegions({
+  collection: validation,
+  properties: ['LC'],
+  scale: 2.5
+});
+print(Vsampled, 'Vsampled')
+var Validation = Vsampled.classify(trainingclassifier);
+print (Validation, 'Validation')
+
+//error matrix claculation
+var error_matrix = Validation.errorMatrix({
+  actual:'LC',
+  predicted:'classification',
+});
+
+print (error_matrix, 'EMmodel')
+var total_accuracy = error_matrix.accuracy();
+print(total_accuracy, 'total_accuracyModel')
+
+var user_accuracy = error_matrix.consumersAccuracy();
+print(user_accuracy, 'user_accuracy')
+ 
+var pro_accuracy = error_matrix.producersAccuracy();
+print(pro_accuracy, "pro_accuracy")
+ 
+var kappa = error_matrix.kappa();
+print(kappa, 'kappa');
