@@ -1,0 +1,136 @@
+//uploading satellite images
+var NubraQB2_05March2003 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/Siachen03MAR05QB2");
+var GangaQB2_09May2010 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/10MAY09GangaQB2");
+var NubraQB2_20Nov2009 = ee.Image("projects/ee-zmukhtar/assets/PlanetekImages/Siachen09NOV20QB2");
+// uploading areas of intersts
+var aoi = ee.FeatureCollection('projects/gee-zmukhtar/assets/SiachenFCFinal');
+var aoi2 = ee.FeatureCollection("projects/gee-zmukhtar/assets/GamgaFluvialCorridor1");
+Map.centerObject(GangaUpdated);
+
+// selecting and merging into single training dataset (polygons) file for 2003 Nubra image
+var trainingDataNubra2003 = VegNubra2003QB2.merge(WaterNubra2003QB2).merge(SedNubra2003QB2);
+// splitting training dataset in callibration dataset and validation dataset
+var random_columnNubra2003 = trainingDataNubra2003.randomColumn(); // is used to split data
+var Calibration_sampleNubra2003polygon = random_columnNubra2003.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sampleNubra2003polygon = random_columnNubra2003.filter(ee.Filter.lte('random',0.3)); // 30%
+print(Calibration_sampleNubra2003polygon, "Calibration_sampleNubra2003polygon")
+print(validation_sampleNubra2003polygon, "validation_sampleNubra2003polygon")
+
+// selecting and merging into single training dataset (polygons) file for 2009 Nubra image
+var trainingDataNubra2009 = VegNubra2009QB2.merge(WaterNubra2009QB2).merge(SedNubra2009QB2);
+// splitting training dataset in callibration dataset and validation dataset
+var random_columnNubra2009 = trainingDataNubra2009.randomColumn(); // is used to split data
+var Calibration_sampleNubra2009polygon = random_columnNubra2009.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sampleNubra2009polygon = random_columnNubra2009.filter(ee.Filter.lte('random',0.3)); // 30%
+print(Calibration_sampleNubra2009polygon, "Calibration_sampleNubra2009polygon")
+print(validation_sampleNubra2009polygon, "validation_sampleNubra2009polygon")
+
+// selecting and merging into single training dataset (polygons) file for 2010 Ganga image
+var trainingDataGanga2010 = VegGanga2010QB2.merge(WaterGanga2010QB2).merge(SedGanga2010QB2);
+// splitting training dataset in callibration dataset and validation dataset
+var random_columnGanga2010 = trainingDataGanga2010.randomColumn(); // is used to split data
+var Calibration_sampleGanga2010polygon = random_columnGanga2010.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sampleGanga2010polygon = random_columnGanga2010.filter(ee.Filter.lte('random',0.3)); // 30%
+print(Calibration_sampleGanga2010polygon, "Calibration_sampleGanga2010polygon")
+print(validation_sampleGanga2010polygon, "validation_sampleGanga2010polygon")
+
+// Sampling training data_polygon to pixels for Nubra 2003
+var CsampledNubra2003 = NubraQB2_05March2003.sampleRegions({
+  collection: Calibration_sampleNubra2003polygon,
+//  properties: ['b4', 'b3'],
+  scale: 2.5
+});
+print (CsampledNubra2003, 'CsampledNubra2003')
+
+// Sampling training data_polygon to pixels for Nubra 2009
+var CsampledNubra2009 = NubraQB2_20Nov2009.sampleRegions({
+  collection: Calibration_sampleNubra2009polygon,
+//  properties: ['b4', 'b3'],
+  scale: 2.5
+});
+print (CsampledNubra2009, 'CsampledNubra2009')
+
+// Sampling training data_polygon to pixels for Ganga 2010
+var CsampledGanga2010 = GangaQB2_09May2010.sampleRegions({
+  collection: Calibration_sampleGanga2010polygon,
+//  properties: ['b4', 'b3'],
+  scale: 2.5
+});
+print (CsampledGanga2010, 'CsampledGanga2010')
+
+//Merging Callibration sampling for all the images
+var CSampledAll= CsampledNubra2003.merge(CsampledNubra2009).merge(CsampledGanga2010)
+//Merging Validation sampling for all the images
+var ValidationDatasetAll=validation_sampleNubra2003polygon.merge(validation_sampleNubra2009polygon).merge(validation_sampleGanga2010polygon)
+
+//Training Classifier Random Forest
+var trainingclassifier = ee.Classifier.smileRandomForest({
+                  numberOfTrees: 100,
+                  seed: 7})
+.train({
+  features: CSampledAll,
+  classProperty: 'LC',
+  inputProperties: ['b4','b3'],
+}).setOutputMode('classification');
+print(trainingclassifier, 'trainingclassifier');
+
+//checking training accuracy
+var trainAccuracy = trainingclassifier.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+// clipping original image using aoi shapefile
+//do this step for every location and image in the list
+var Ganga2010Clipped= GangaQB2_09May2010.clip(aoi2)
+
+//classifying images
+var Ganga2010clsfd = Ganga2010Clipped.classify(trainingclassifier);
+Map.addLayer(Ganga2010clsfd, {min:0, max:2, palette:['green', 'blue', 'gray']}, 'Ganga2010clsfd');
+
+//Downloading image or uploading it to drive
+Export.image.toDrive({
+  image: Ganga2010clsfd,
+  description:'Ganga2010clsfd',
+  folder: 'QB2',
+  scale:2.5,
+  region:roi2,
+})
+
+// calculating area (sq km) of geomorphic units from classified images
+var all_classes_area = ee.Image.pixelArea().addBands(Ganga2010clsfd).divide(1e6)
+                      .reduceRegion({
+                        reducer: ee.Reducer.sum().group(1), 
+                        geometry: roi2,
+                        scale: 2.5,
+                        bestEffort: true
+})
+print(all_classes_area, 'Area Ganga2010clsfd')
+
+//validation sampling
+var Vsampled = Ganga2010Clipped.sampleRegions({
+  collection: ValidationDatasetAll,
+  properties: ['LC'],
+  scale: 2.5
+});
+print(Vsampled, 'Vsampled')
+
+var Validation = Vsampled.classify(trainingclassifier);
+print (Validation, 'Validation')
+
+//error matrix claculation
+var error_matrix = Validation.errorMatrix({
+  actual:'LC',
+  predicted:'classification',
+});
+print (error_matrix, 'EMmodel')
+var total_accuracy = error_matrix.accuracy();
+print(total_accuracy, 'total_accuracyModel')
+
+var user_accuracy = error_matrix.consumersAccuracy();
+print(user_accuracy, 'user_accuracy')
+ 
+var pro_accuracy = error_matrix.producersAccuracy();
+print(pro_accuracy, "pro_accuracy")
+ 
+var kappa = error_matrix.kappa();
+print(kappa, 'kappa');
