@@ -1,0 +1,142 @@
+//study area shapefile
+var study_area = ee.FeatureCollection('projects/gee-zmukhtar/assets/SiachenFluvialCorridorFinal');
+Map.addLayer(study_area,{color:'blue'},'Study Area', false);
+Map.centerObject(study_area);
+
+//uploading Landsat images
+var image_1989Siachen = ee.Image("projects/gee-zmukhtar/assets/Landsat/LS19891009SiachenMS");
+Map.addLayer(image_1989Siachen,{color:'blue'},'image_1989Siachen', false);
+var image_1995Siachen = ee.Image("projects/gee-zmukhtar/assets/Landsat/Siachen19951111clipped");
+Map.addLayer(image_1995Siachen,{color:'blue'},'image_1995Siachen', false);
+
+// for 1989 image
+// renaming band tags into band names 
+var B_22 = image_1989Siachen.select('b2')//.rename("green")
+var B_44 = image_1989Siachen.select('b4')//.rename("nir")
+// making band combination, or in other words- to select the required bands
+var predictors2 = B_44
+.addBands(B_22)
+print('predictors2: ', predictors2);
+// making Normalised Difference Water Index raster file
+var Nubra1989ndwi = B_22.subtract(B_44).divide(B_22.add(B_44)).rename('ndwi');
+
+// for 1995 image
+// renaming band tags into band names 
+var B2 = image_1995Siachen.select('b2')//.rename("green")
+var B4 = image_1995Siachen.select('b4')//.rename("nir")
+// making band combination, or in other words- to select the required bands
+var predictors = B4
+.addBands(B2)
+print('predictors: ', predictors);
+// making Normalised Difference Water Index raster file
+var Nubra1995ndwi = B2.subtract(B4).divide(B2.add(B4)).rename('ndwi');
+Map.addLayer(Nubra1995ndwi,{color:'blue'},'Nubra1995ndwi', false);
+
+
+// selecting and merging into single training dataset (polygons) file
+// for 1989 image
+var training_DataNubra = vegVali19891009Siachen.merge(waterVali19891009Siachen).merge(SediVali19891009Siachen);
+var random_column1 = training_DataNubra.randomColumn(); // is used to split data
+var Calibration_sample1 = random_column1.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample1 = random_column1.filter(ee.Filter.lte('random',0.3));
+print(Calibration_sample1,'Calibration_sample1')
+print(validation_sample1,'validation_sample1')
+// for 1995 image
+var training_DataNubra1995 = VegValiSiachen19951111.merge(waterValiSiachen19951111).merge(sediValiSiachen19951111);
+var random_column2 = training_DataNubra1995.randomColumn(); 
+// splitting dataset in claibration and validation datasets
+var Calibration_sample2 = random_column2.filter(ee.Filter.gte('random',0.3)); // 70% (70/100) gte training
+var validation_sample2 = random_column2.filter(ee.Filter.lte('random',0.3));
+print(Calibration_sample2,'Calibration_sample2')
+print(validation_sample2,'validation_sample2')
+
+// Sampling training data_polygon to pixels
+var samples1989 = image_1989Siachen.sampleRegions({
+  collection: Calibration_sample1,
+  properties: ['LC'],
+  scale: 30 });
+print(samples1989, 'CsamplesSiachen1989')
+var samples1995 = image_1995Siachen.sampleRegions({
+  collection: Calibration_sample2,
+  properties: ['LC'],
+  scale: 30 });
+print(samples1995, 'CsamplesSiachen1995')
+
+//merging
+var calibrationSamples= samples1989.merge(samples1995)
+var ValidationSamples= validation_sample1.merge(validation_sample2);
+print(calibrationSamples,'calibrationSamples')
+print(ValidationSamples,'ValidationSamples')
+
+//Training Classifier Random Forest
+var trainingclassifier = ee.Classifier.smileRandomForest({
+                  numberOfTrees: 100,
+                  seed: 7})
+.train({
+features: calibrationSamples,
+classProperty: 'LC',
+inputProperties: ['b4', 'b2'],
+}).setOutputMode('classification');
+
+// checking training accuracy
+var confusionMatrix = trainingclassifier.confusionMatrix();
+print('Error matrix: ', confusionMatrix);
+print('Training overall accuracy: ', confusionMatrix.accuracy());
+
+// clipping original image using aoi shapefile
+var Siachen1989crpd = image_1995Siachen.clip(study_area)
+Map.addLayer(Siachen1989crpd,{color:'blue'},'Siachen1989crpd', false);
+
+// classifying images
+var Siachen1989clsfd = Siachen1989crpd.classify(trainingclassifier);
+Map.addLayer(Siachen1989clsfd, {min:0, max:2, palette:['green', 'blue', 'gray']}, 'Siachen1989clsfd')
+
+// calculating area (sq km) of geomorphic units from classified images
+var all_classes_area = ee.Image.pixelArea().addBands(Siachen1989clsfd).divide(1e6)
+                      .reduceRegion({
+                        reducer: ee.Reducer.sum().group(1), 
+                        geometry: study_area,
+                        scale: 30,
+                        bestEffort: true
+                      })
+print(all_classes_area, 'All Classes Area in Square KM')
+
+//Downloading image or uploading it to drive
+Export.image.toDrive({
+  image:Siachen1989clsfd,
+  description:'Siachen1995clsfd',
+  scale:30,
+  region: study_area,
+})
+
+//validation sampling
+var VsampledSiachen1995 = Siachen1989crpd.sampleRegions({
+  collection: ValidationSamples,
+  properties: ['LC'],
+  scale: 30
+});
+print(VsampledSiachen1995, 'VsampledSiachen1995')
+
+var ValidationSiachen112_200825 = VsampledSiachen1995.classify(trainingclassifier);
+print (ValidationSiachen112_200825, 'ValidationSiachen112_200825')
+Map.addLayer(ValidationSiachen200825, 'ValidationSiachen200825')
+
+//error matrix claculation
+var error_matriSiachen112_200825 = ValidationSiachen112_200825.errorMatrix({
+  actual:'LC',
+  predicted:'classification',
+});
+print (error_matriSiachen112_200825, 'error_matriSiachen112_200825')   
+
+var total_accuracySiachen112_0825 = error_matriSiachen112_200825.accuracy();
+print(total_accuracySiachen112_0825, 'total_accuracySiachen112_0825')
+ 
+var user_accuracySiachen112_200825 = error_matriSiachen112_200825.consumersAccuracy();
+print(user_accuracySiachen112_200825, 'user_accuracySiachen112_200825')
+ 
+var pro_accSiachen112_200825 = error_matriSiachen112_200825.producersAccuracy();
+ 
+print(pro_accSiachen112_200825, "pro_accSiachen112_200825")
+ 
+var kappaSiachen112_200825 = error_matriSiachen112_200825.kappa();
+print(kappaSiachen112_200825, 'kappaSiachen112_200825');
