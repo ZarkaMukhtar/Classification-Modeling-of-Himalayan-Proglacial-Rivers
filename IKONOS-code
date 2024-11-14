@@ -9,7 +9,7 @@ var aoi3 = ee.FeatureCollection("projects/gee-zmukhtar/assets/2003KholaReach3");
 var KholaIK_2003 = KholaIK2003.clip(aoi3)
 Map.addLayer(KholaIK_2003, {color:'blue'},'KholaIK_2003', false);
 
-// renaming the band names in band tags
+// renaming the band tags into band names
 var B3= KholaIK_2003.select('b3')//.rename("green")
 var B4 = KholaIK_2003.select('b4')//.rename("nir")
 
